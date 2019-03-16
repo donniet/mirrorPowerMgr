@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"time"
 
+	"github.com/donniet/cec"
 	"github.com/gorilla/websocket"
 )
 
@@ -47,16 +48,15 @@ type motionMessages struct {
 	} `json:"motion"`
 }
 
+type request struct {
+	Method string `json:"method"`
+	Path   string `json:"path"`
+	Body   string `json:"body"`
+}
+
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	flag.Parse()
-
-	// conn, err := cec.Open(cecName, deviceName)
-
-	// if err != nil {
-	// 	log.Fatal(err)
-	// 	return
-	// }
 
 	var msg motionMessages
 
@@ -80,6 +80,16 @@ func main() {
 		}
 		done := make(chan struct{})
 
+		conn, err := cec.Open(cecName, deviceName)
+
+		if err != nil {
+			log.Fatal(err)
+			return
+		}
+
+		commands := make(chan *cec.Command)
+		conn.Commands = commands
+
 		// reader
 		go func() {
 			defer close(done)
@@ -102,10 +112,41 @@ func main() {
 			}
 		}()
 
+		sendPowerStatus := func(status string) error {
+			req := request{}
+			req.Method = "POST"
+			req.Path = "display/powerStatus"
+			req.Body = status
+
+			if b, err := json.Marshal(req); err != nil {
+				log.Fatal(err)
+				return nil
+			} else {
+				return client.WriteMessage(websocket.TextMessage, b)
+			}
+		}
+
+		if err := conn.PowerOn(0); err != nil {
+			log.Printf("error powering on %v", err)
+		} else if err := sendPowerStatus("on"); err != nil {
+			log.Printf("error sending power status %v", err)
+		}
+
 		for {
 			select {
 			case <-done:
 				break
+			case cmd := <-commands:
+				switch cmd.Operation {
+				case "STANDBY":
+					if err := sendPowerStatus("standby"); err != nil {
+						log.Printf("error sending status: %v", err)
+					}
+				case "ROUTING_CHANGE":
+					if err := sendPowerStatus("on"); err != nil {
+						log.Printf("error sending status: %v", err)
+					}
+				}
 			case <-interrupt:
 				// Cleanly close the connection by sending a close message and then
 				// waiting (with timeout) for the server to close the connection.
