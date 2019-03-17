@@ -28,16 +28,33 @@ func (u *urlFlag) Set(s string) (err error) {
 	return
 }
 
+type durationFlag time.Duration
+
+func (f *durationFlag) String() string {
+	return time.Duration(*f).String()
+}
+
+func (f *durationFlag) Set(s string) error {
+	if d, err := time.ParseDuration(s); err != nil {
+		return err
+	} else {
+		*f = durationFlag(d)
+	}
+	return nil
+}
+
 var (
-	cecName      = "mirror"
-	deviceName   = "0"
-	websocketURL urlFlag
+	cecName       = "mirror"
+	deviceName    = "0"
+	websocketURL  urlFlag
+	sleepDuration = durationFlag(10 * time.Minute)
 )
 
 func init() {
 	flag.Var(&websocketURL, "websocketURL", "websocket url of smart mirror")
 	flag.StringVar(&cecName, "cecName", cecName, "cec name")
 	flag.StringVar(&deviceName, "deviceName", deviceName, "cec device name")
+	flag.Var(&sleepDuration, "sleep", "time before display goes to sleep")
 }
 
 type motionMessages struct {
@@ -45,6 +62,7 @@ type motionMessages struct {
 		Detections []struct {
 			DateTime time.Time `json:"dateTime"`
 		} `json:"detections"`
+		SleepDuration string `json:"sleepDuration"`
 	} `json:"motion"`
 }
 
@@ -63,6 +81,18 @@ func main() {
 	interrupt := make(chan os.Signal, 1)
 	signal.Notify(interrupt, os.Interrupt)
 
+	sleeper := NewSleeper(time.Duration(sleepDuration))
+	defer sleeper.Close()
+
+	conn, err := cec.Open(cecName, deviceName)
+	if err != nil {
+		log.Fatal(err)
+		return
+	}
+
+	commands := make(chan *cec.Command)
+	conn.Commands = commands
+
 	// lastMotion := time.Time{}
 
 	for {
@@ -78,17 +108,8 @@ func main() {
 				continue
 			}
 		}
+
 		done := make(chan struct{})
-
-		conn, err := cec.Open(cecName, deviceName)
-
-		if err != nil {
-			log.Fatal(err)
-			return
-		}
-
-		commands := make(chan *cec.Command)
-		conn.Commands = commands
 
 		// reader
 		go func() {
@@ -108,16 +129,27 @@ func main() {
 
 				if len(msg.Motion.Detections) > 0 {
 					log.Printf(msg.Motion.Detections[0].DateTime.String())
+
+					if time.Now().Sub(msg.Motion.Detections[0].DateTime) < sleeper.Timeout {
+						sleeper.On()
+					}
+				}
+				if msg.Motion.SleepDuration != "" {
+					if d, err := time.ParseDuration(msg.Motion.SleepDuration); err != nil {
+						log.Printf("error parsing duration: %s", msg.Motion.SleepDuration)
+					} else {
+						sleeper.Timeout = d
+					}
 				}
 			}
 		}()
 
 		sendPowerStatus := func(status string) error {
-			req := request{}
-			req.Method = "POST"
-			req.Path = "display/powerStatus"
-			req.Body = status
-
+			req := request{
+				Method: "POST",
+				Path:   "display/powerStatus",
+				Body:   status,
+			}
 			if b, err := json.Marshal(req); err != nil {
 				log.Fatal(err)
 				return nil
@@ -137,15 +169,30 @@ func main() {
 			case <-done:
 				break
 			case cmd := <-commands:
+				var err error
 				switch cmd.Operation {
 				case "STANDBY":
-					if err := sendPowerStatus("standby"); err != nil {
-						log.Printf("error sending status: %v", err)
-					}
+					err = sendPowerStatus("standby")
+					sleeper.Sleep()
 				case "ROUTING_CHANGE":
-					if err := sendPowerStatus("on"); err != nil {
-						log.Printf("error sending status: %v", err)
-					}
+					err = sendPowerStatus("on")
+					sleeper.On()
+				}
+				if err != nil {
+					log.Printf("error sending status: %v", err)
+				}
+			case sleepPower := <-sleeper.C:
+				var err error
+				if sleepPower {
+					conn.PowerOn(0)
+					// send the power status, which could be a duplicate
+					err = sendPowerStatus("on")
+				} else {
+					conn.Standby(0)
+					err = sendPowerStatus("standby")
+				}
+				if err != nil {
+					log.Printf("error sending status: %v", err)
 				}
 			case <-interrupt:
 				// Cleanly close the connection by sending a close message and then
