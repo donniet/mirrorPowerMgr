@@ -164,10 +164,19 @@ func main() {
 			log.Printf("error sending power status %v", err)
 		}
 
+		checker := time.NewTicker(1 * time.Minute)
+
 		for {
 			select {
 			case <-done:
 				break
+			case <-checker.C:
+				awake := sleeper.Status()
+				if awake {
+					conn.PowerOn(0)
+				} else {
+					conn.Standby(0)
+				}
 			case cmd := <-commands:
 				var err error
 				switch cmd.Operation {
