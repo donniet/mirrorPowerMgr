@@ -122,10 +122,8 @@ func main() {
 					return
 				}
 
-				log.Printf("raw message: %s", string(message))
-
 				if err := json.Unmarshal(message, &msg); err != nil {
-					log.Printf("unmarshal error %v", err)
+					log.Printf("unmarshal error %v - message %s", err, string(message))
 					continue
 				}
 
@@ -149,7 +147,7 @@ func main() {
 		sendPowerStatus := func(status string) error {
 			req := request{
 				Method: "POST",
-				Path:   "display/powerStatus",
+				Path:   "/display/powerStatus",
 				Body:   status,
 			}
 			if b, err := json.Marshal(req); err != nil {
