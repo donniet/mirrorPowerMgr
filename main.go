@@ -64,6 +64,9 @@ type motionMessages struct {
 		} `json:"detections"`
 		SleepDuration string `json:"sleepDuration"`
 	} `json:"motion"`
+	Display struct {
+		PowerStatus string `json:"powerStatus"`
+	} `json:"display"`
 }
 
 type request struct {
@@ -110,6 +113,7 @@ func main() {
 		}
 
 		done := make(chan struct{})
+		serviceStatus := "on"
 
 		// reader
 		go func() {
@@ -127,6 +131,7 @@ func main() {
 					continue
 				}
 
+				serviceStatus = msg.Display.PowerStatus
 				if len(msg.Motion.Detections) > 0 {
 					log.Printf(msg.Motion.Detections[0].DateTime.String())
 
@@ -171,11 +176,16 @@ func main() {
 			case <-done:
 				break
 			case <-checker.C:
+				status := "on"
 				awake := sleeper.Status()
 				if awake {
 					conn.PowerOn(0)
 				} else {
+					status = "standby"
 					conn.Standby(0)
+				}
+				if status != serviceStatus {
+					sendPowerStatus(status)
 				}
 			case cmd := <-commands:
 				var err error
