@@ -122,6 +122,8 @@ func main() {
 					return
 				}
 
+				log.Printf("raw message: %s", string(message))
+
 				if err := json.Unmarshal(message, &msg); err != nil {
 					log.Printf("unmarshal error %v", err)
 					continue

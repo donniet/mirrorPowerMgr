@@ -1,0 +1,16 @@
+[Unit]
+Description=Power Management
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=pi
+Group=pi
+ExecStart=/home/pi/go/bin/mirrorPowerMgr --websocketURL ws://mirror.local:8080/websocket --cecName RPI
+WorkingDirectory=/home/pi/go/src/github.com/donniet/mirrorPowerMgr
+Restart=always
+RestartSec=10
+KillSignal=SIGINT
+
+[Install]
+WantedBy=multi-user.target
