@@ -3,14 +3,18 @@ package main
 import (
 	"encoding/json"
 	"flag"
+	"fmt"
+	"io/ioutil"
 	"log"
+	"math"
+	"net/http"
 	"net/url"
 	"os"
 	"os/signal"
+	"strings"
 	"time"
 
 	"github.com/donniet/cec"
-	"github.com/gorilla/websocket"
 )
 
 type urlFlag struct {
@@ -46,15 +50,17 @@ func (f *durationFlag) Set(s string) error {
 var (
 	cecName       = "mirror"
 	deviceName    = "0"
-	websocketURL  urlFlag
+	mirrorAPI     urlFlag
 	sleepDuration = durationFlag(10 * time.Minute)
+	listenAddr    = ":8080"
 )
 
 func init() {
-	flag.Var(&websocketURL, "websocketURL", "websocket url of smart mirror")
+	flag.Var(&mirrorAPI, "mirrorURL", "url of smart mirror API")
 	flag.StringVar(&cecName, "cecName", cecName, "cec name")
 	flag.StringVar(&deviceName, "deviceName", deviceName, "cec device name")
 	flag.Var(&sleepDuration, "sleep", "time before display goes to sleep")
+	flag.StringVar(&listenAddr, "listen", listenAddr, "address to listen on")
 }
 
 type motionMessages struct {
@@ -75,17 +81,33 @@ type request struct {
 	Body   string `json:"body"`
 }
 
+func sendPowerStatus(status string) error {
+	r, err := http.Post(mirrorAPI.String(), "application/json", strings.NewReader(status))
+	if err != nil {
+		return err
+	}
+
+	if r.StatusCode != 200 {
+		b, err := ioutil.ReadAll(r.Body)
+
+		if err != nil {
+			return err
+		}
+
+		return fmt.Errorf("error from api: %s", string(b))
+	}
+
+	return nil
+}
+
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	flag.Parse()
 
-	var msg motionMessages
+	// var msg motionMessages
 
 	interrupt := make(chan os.Signal, 1)
 	signal.Notify(interrupt, os.Interrupt)
-
-	sleeper := NewSleeper(time.Duration(sleepDuration))
-	defer sleeper.Close()
 
 	conn, err := cec.Open(cecName, deviceName)
 	if err != nil {
@@ -96,137 +118,115 @@ func main() {
 	commands := make(chan *cec.Command)
 	conn.Commands = commands
 
-	// lastMotion := time.Time{}
+	fromService := make(chan bool)
+
+	status := "on"
+
+	if err := conn.PowerOn(0); err != nil {
+		log.Printf("error powering on %v", err)
+	} else if err := sendPowerStatus("on"); err != nil {
+		log.Printf("error sending power status %v", err)
+	}
+
+	handler := func(w http.ResponseWriter, r *http.Request) {
+		readStatus := ""
+
+		switch r.Method {
+		case http.MethodGet:
+			if b, err := json.Marshal(status); err != nil {
+				http.Error(w, "error marshalling data", http.StatusInternalServerError)
+				log.Fatal(err)
+			} else {
+				w.Header().Set("Content-Type", "application/json")
+				if _, err = w.Write(b); err != nil {
+					log.Printf("error writing response, %v", err)
+				}
+			}
+		case http.MethodPost:
+			if b, err := ioutil.ReadAll(r.Body); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			} else if err = json.Unmarshal(b, &readStatus); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			switch readStatus {
+			case "on":
+				fromService <- true
+			case "standby":
+				fromService <- false
+			default:
+				http.Error(w, "invalid status value", http.StatusBadRequest)
+				return
+			}
+		default:
+			http.Error(w, "bad method", http.StatusMethodNotAllowed)
+			return
+		}
+	}
+
+	s := &http.Server{
+		Addr:    listenAddr,
+		Handler: http.HandlerFunc(handler),
+	}
+	go s.ListenAndServe()
+	defer s.Close()
+	// http.ListenAndServe(listenAddr, http.Handler(handler))
+
+	sleeper := time.NewTimer(time.Duration(math.MaxInt64))
+
+	checker := time.NewTicker(1 * time.Minute)
 
 	for {
-		client, _, err := websocket.DefaultDialer.Dial(websocketURL.String(), nil)
+		err = nil
 
-		if err != nil {
-			log.Printf("error connecting, retrying in 5sec: %v", err)
-
-			select {
-			case <-interrupt:
-				return
-			case <-time.After(5 * time.Second):
-				continue
+		select {
+		case cmd := <-commands:
+			var err error
+			switch cmd.Operation {
+			case "STANDBY":
+				sleeper.Reset(time.Duration(math.MaxInt64))
+				status = "standby"
+			case "ROUTING_CHANGE":
+				sleeper.Reset(time.Duration(sleepDuration))
+				status = "on"
 			}
-		}
-
-		done := make(chan struct{})
-		serviceStatus := "on"
-
-		// reader
-		go func() {
-			defer close(done)
-
-			for {
-				_, message, err := client.ReadMessage()
-				if err != nil {
-					log.Printf("read error: %v", err)
-					return
-				}
-
-				if err := json.Unmarshal(message, &msg); err != nil {
-					log.Printf("unmarshal error %v - message %s", err, string(message))
-					continue
-				}
-
-				serviceStatus = msg.Display.PowerStatus
-				if len(msg.Motion.Detections) > 0 {
-					log.Printf(msg.Motion.Detections[0].DateTime.String())
-
-					if time.Now().Sub(msg.Motion.Detections[0].DateTime) < sleeper.Timeout {
-						sleeper.On()
-					}
-				}
-				if msg.Motion.SleepDuration != "" {
-					if d, err := time.ParseDuration(msg.Motion.SleepDuration); err != nil {
-						log.Printf("error parsing duration: %s", msg.Motion.SleepDuration)
-					} else {
-						sleeper.Timeout = d
-					}
-				}
+			if err = sendPowerStatus(status); err != nil {
+				log.Printf("error sending status: %v", err)
 			}
-		}()
+		case <-sleeper.C:
+			sleeper.Reset(time.Duration(math.MaxInt64))
+			conn.Standby(0)
+			status = "standby"
 
-		sendPowerStatus := func(status string) error {
-			req := request{
-				Method: "POST",
-				Path:   "/display/powerStatus",
-				Body:   status,
+			if err = sendPowerStatus("standby"); err != nil {
+				log.Printf("error sending status: %v", err)
 			}
-			if b, err := json.Marshal(req); err != nil {
-				log.Fatal(err)
-				return nil
-			} else {
-				return client.WriteMessage(websocket.TextMessage, b)
+		case s := <-fromService:
+			if s && status != "on" {
+				conn.PowerOn(0)
+				status = "on"
+				err = sendPowerStatus(status)
+			} else if !s && status != "standby" {
+				conn.Standby(0)
+				status = "standby"
+				err = sendPowerStatus(status)
 			}
-		}
 
-		if err := conn.PowerOn(0); err != nil {
-			log.Printf("error powering on %v", err)
-		} else if err := sendPowerStatus("on"); err != nil {
-			log.Printf("error sending power status %v", err)
-		}
-
-		checker := time.NewTicker(1 * time.Minute)
-
-		for {
-			select {
-			case <-done:
-				break
-			case <-checker.C:
-				status := "on"
-				awake := sleeper.Status()
-				if awake {
+			if err != nil {
+				log.Printf("error sending status: %v", err)
+			}
+		case <-checker.C:
+			readStatus := conn.GetDevicePowerStatus(0)
+			if readStatus != status {
+				if status == "on" {
 					conn.PowerOn(0)
-				} else {
-					status = "standby"
+				} else if status == "standby" {
 					conn.Standby(0)
 				}
-				if status != serviceStatus {
-					sendPowerStatus(status)
-				}
-			case cmd := <-commands:
-				var err error
-				switch cmd.Operation {
-				case "STANDBY":
-					err = sendPowerStatus("standby")
-					sleeper.Sleep()
-				case "ROUTING_CHANGE":
-					err = sendPowerStatus("on")
-					sleeper.On()
-				}
-				if err != nil {
-					log.Printf("error sending status: %v", err)
-				}
-			case sleepPower := <-sleeper.C:
-				var err error
-				if sleepPower {
-					conn.PowerOn(0)
-					// send the power status, which could be a duplicate
-					err = sendPowerStatus("on")
-				} else {
-					conn.Standby(0)
-					err = sendPowerStatus("standby")
-				}
-				if err != nil {
-					log.Printf("error sending status: %v", err)
-				}
-			case <-interrupt:
-				// Cleanly close the connection by sending a close message and then
-				// waiting (with timeout) for the server to close the connection.
-				err := client.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
-				if err != nil {
-					log.Println("write close:", err)
-					return
-				}
-				select {
-				case <-done:
-				case <-time.After(time.Second):
-				}
-				return
 			}
+		case <-interrupt:
+			break
 		}
 	}
 }
