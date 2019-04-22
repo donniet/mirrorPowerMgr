@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -11,7 +12,6 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
-	"strings"
 	"time"
 
 	"github.com/donniet/cec"
@@ -82,7 +82,11 @@ type request struct {
 }
 
 func sendPowerStatus(status string) error {
-	r, err := http.Post(mirrorAPI.String(), "application/json", strings.NewReader(status))
+	b, err := json.Marshal(status)
+	if err != nil {
+		log.Fatal("error marshalling string: %v", err)
+	}
+	r, err := http.Post(mirrorAPI.String(), "application/json", bytes.NewReader(b))
 	if err != nil {
 		return err
 	}
@@ -177,6 +181,7 @@ func main() {
 
 	checker := time.NewTicker(1 * time.Minute)
 
+eventLoop:
 	for {
 		err = nil
 
@@ -226,7 +231,7 @@ func main() {
 				}
 			}
 		case <-interrupt:
-			break
+			break eventLoop
 		}
 	}
 }
