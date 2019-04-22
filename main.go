@@ -213,10 +213,12 @@ eventLoop:
 				conn.PowerOn(0)
 				status = "on"
 				err = sendPowerStatus(status)
+				sleeper.Reset(time.Duration(sleepDuration))
 			} else if !s && status != "standby" {
 				conn.Standby(0)
 				status = "standby"
 				err = sendPowerStatus(status)
+				sleeper.Reset(time.Duration(math.MaxInt64))
 			}
 
 			if err != nil {
