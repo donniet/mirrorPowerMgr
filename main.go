@@ -118,6 +118,7 @@ func main() {
 		log.Fatal(err)
 		return
 	}
+	defer conn.Destroy()
 
 	commands := make(chan *cec.Command)
 	conn.Commands = commands
