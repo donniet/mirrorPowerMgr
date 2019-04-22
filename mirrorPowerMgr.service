@@ -6,7 +6,7 @@ After=network-online.target
 [Service]
 User=pi
 Group=pi
-ExecStart=/home/pi/go/bin/mirrorPowerMgr --websocketURL ws://mirror.local:8080/websocket --cecName RPI
+ExecStart=/home/pi/go/bin/mirrorPowerMgr --mirrorURL http://mirror.local:8080/api/display/powerStatus --listen ":9080" --cecName RPI
 WorkingDirectory=/home/pi/go/src/github.com/donniet/mirrorPowerMgr
 Restart=always
 RestartSec=10
