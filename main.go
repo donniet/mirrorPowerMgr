@@ -123,7 +123,7 @@ func main() {
 	commands := make(chan *cec.Command)
 	conn.Commands = commands
 
-	fromService := make(chan bool)
+	fromService := make(chan string)
 
 	status := "on"
 
@@ -156,14 +156,14 @@ func main() {
 				return
 			}
 			switch readStatus {
-			case "on":
-				fromService <- true
+			case "on": 
 			case "standby":
-				fromService <- false
 			default:
 				http.Error(w, "invalid status value", http.StatusBadRequest)
 				return
 			}
+
+			fromService <- readStatus
 		default:
 			http.Error(w, "bad method", http.StatusMethodNotAllowed)
 			return
@@ -179,7 +179,6 @@ func main() {
 	// http.ListenAndServe(listenAddr, http.Handler(handler))
 
 	sleeper := time.NewTimer(time.Duration(math.MaxInt64))
-
 	checker := time.NewTicker(1 * time.Minute)
 
 eventLoop:
@@ -189,15 +188,18 @@ eventLoop:
 		select {
 		case cmd := <-commands:
 			var err error
-			switch cmd.Operation {
-			case "STANDBY":
+		
+			if cmd.Operation == "STANDBY" && status != "standby" {
 				sleeper.Reset(time.Duration(math.MaxInt64))
 				status = "standby"
-			case "ROUTING_CHANGE":
+				err = sendPowerStatus(status)
+			} else if cmd.Operation == "ROUTING_CHANGE" && status != "on" {
 				sleeper.Reset(time.Duration(sleepDuration))
 				status = "on"
+				err = sendPowerStatus(status)
 			}
-			if err = sendPowerStatus(status); err != nil {
+			
+			if err != nil {
 				log.Printf("error sending status: %v", err)
 			}
 		case <-sleeper.C:
@@ -209,17 +211,23 @@ eventLoop:
 				log.Printf("error sending status: %v", err)
 			}
 		case s := <-fromService:
-			if s && status != "on" {
-				conn.PowerOn(0)
-				status = "on"
+			if s == "on" {
 				sleeper.Reset(time.Duration(sleepDuration))
-			} else if !s && status != "standby" {
-				conn.Standby(0)
-				status = "standby"
-				sleeper.Reset(time.Duration(math.MaxInt64))
+			}
+			if s != status {
+				if s == "on" {
+					conn.PowerOn(0)
+					status = "on"
+					err = sendPowerStatus(status)
+				} else if s == "standby" {
+					conn.Standby(0)
+					status = "standby"
+					err = sendPowerStatus(status)
+					sleeper.Reset(time.Duration(math.MaxInt64))
+				}
 			}
 
-			if err = sendPowerStatus(status); err != nil {
+			if err != nil {
 				log.Printf("error sending status: %v", err)
 			}
 		case <-checker.C:
@@ -227,10 +235,8 @@ eventLoop:
 			if readStatus != status {
 				if status == "on" {
 					conn.PowerOn(0)
-					sleeper.Reset(time.Duration(sleepDuration))
 				} else if status == "standby" {
 					conn.Standby(0)
-					sleeper.Reset(time.Duration(math.MaxInt64))
 				}
 			}
 		case <-interrupt:
