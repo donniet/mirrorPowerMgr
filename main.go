@@ -212,16 +212,14 @@ eventLoop:
 			if s && status != "on" {
 				conn.PowerOn(0)
 				status = "on"
-				err = sendPowerStatus(status)
 				sleeper.Reset(time.Duration(sleepDuration))
 			} else if !s && status != "standby" {
 				conn.Standby(0)
 				status = "standby"
-				err = sendPowerStatus(status)
 				sleeper.Reset(time.Duration(math.MaxInt64))
 			}
 
-			if err != nil {
+			if err = sendPowerStatus(status); err != nil {
 				log.Printf("error sending status: %v", err)
 			}
 		case <-checker.C:
@@ -229,8 +227,10 @@ eventLoop:
 			if readStatus != status {
 				if status == "on" {
 					conn.PowerOn(0)
+					sleeper.Reset(time.Duration(sleepDuration))
 				} else if status == "standby" {
 					conn.Standby(0)
+					sleeper.Reset(time.Duration(math.MaxInt64))
 				}
 			}
 		case <-interrupt:
