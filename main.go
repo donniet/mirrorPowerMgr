@@ -234,9 +234,11 @@ eventLoop:
 				log.Printf("error sending status: %v", err)
 			}
 		case <-checker.C:
+			log.Printf("checking tv status...")
 			// here we are checking the tv in case something happenned to the CEC
 			readStatus := conn.GetDevicePowerStatus(0)
 			if readStatus != status {
+				log.Printf("current status doesn't match '%s' != '%s'", status, readStatus)
 				if status == "on" {
 					conn.PowerOn(0)
 				} else if status == "standby" {
