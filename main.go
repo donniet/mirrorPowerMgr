@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io/ioutil"
 	"log"
-	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -178,7 +177,7 @@ func main() {
 	defer s.Close()
 	// http.ListenAndServe(listenAddr, http.Handler(handler))
 
-	sleeper := time.NewTimer(time.Duration(math.MaxInt64))
+	sleeper := time.NewTimer(time.Duration(sleepDuration))
 	checker := time.NewTicker(1 * time.Minute)
 
 eventLoop:
@@ -187,8 +186,7 @@ eventLoop:
 
 		select {
 		case cmd := <-commands:
-			var err error
-
+			// this comes from the remote control
 			if cmd.Operation == "STANDBY" && status != "standby" {
 				sleeper.Stop()
 				status = "standby"
@@ -203,6 +201,7 @@ eventLoop:
 				log.Printf("error sending status: %v", err)
 			}
 		case <-sleeper.C:
+			// should we go to sleep?
 			sleeper.Stop()
 			conn.Standby(0)
 			status = "standby"
@@ -211,6 +210,7 @@ eventLoop:
 				log.Printf("error sending status: %v", err)
 			}
 		case s := <-fromService:
+			// this comes from the webservice
 			if s != status {
 				if s == "on" {
 					conn.PowerOn(0)
@@ -220,9 +220,10 @@ eventLoop:
 					conn.Standby(0)
 					status = "standby"
 					err = sendPowerStatus(status)
-					sleeper.Reset(time.Duration(math.MaxInt64))
 				}
 			}
+
+			// always reset the timer in spite of what the current status is
 			if s == "on" {
 				sleeper.Reset(time.Duration(sleepDuration))
 			} else if s == "standby" {
@@ -233,17 +234,17 @@ eventLoop:
 				log.Printf("error sending status: %v", err)
 			}
 		case <-checker.C:
+			// here we are checking the tv in case something happenned to the CEC
 			readStatus := conn.GetDevicePowerStatus(0)
 			if readStatus != status {
 				if status == "on" {
 					conn.PowerOn(0)
-					sleeper.Reset(time.Duration(sleepDuration))
 				} else if status == "standby" {
 					conn.Standby(0)
-					sleeper.Stop()
 				}
 			}
 		case <-interrupt:
+			// here we exit
 			break eventLoop
 		}
 	}
