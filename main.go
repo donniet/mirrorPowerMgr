@@ -156,7 +156,7 @@ func main() {
 				return
 			}
 			switch readStatus {
-			case "on": 
+			case "on":
 			case "standby":
 			default:
 				http.Error(w, "invalid status value", http.StatusBadRequest)
@@ -188,9 +188,9 @@ eventLoop:
 		select {
 		case cmd := <-commands:
 			var err error
-		
+
 			if cmd.Operation == "STANDBY" && status != "standby" {
-				sleeper.Reset(time.Duration(math.MaxInt64))
+				sleeper.Stop()
 				status = "standby"
 				err = sendPowerStatus(status)
 			} else if cmd.Operation == "ROUTING_CHANGE" && status != "on" {
@@ -198,12 +198,12 @@ eventLoop:
 				status = "on"
 				err = sendPowerStatus(status)
 			}
-			
+
 			if err != nil {
 				log.Printf("error sending status: %v", err)
 			}
 		case <-sleeper.C:
-			sleeper.Reset(time.Duration(math.MaxInt64))
+			sleeper.Stop()
 			conn.Standby(0)
 			status = "standby"
 
@@ -211,9 +211,6 @@ eventLoop:
 				log.Printf("error sending status: %v", err)
 			}
 		case s := <-fromService:
-			if s == "on" {
-				sleeper.Reset(time.Duration(sleepDuration))
-			}
 			if s != status {
 				if s == "on" {
 					conn.PowerOn(0)
@@ -226,6 +223,11 @@ eventLoop:
 					sleeper.Reset(time.Duration(math.MaxInt64))
 				}
 			}
+			if s == "on" {
+				sleeper.Reset(time.Duration(sleepDuration))
+			} else if s == "standby" {
+				sleeper.Stop()
+			}
 
 			if err != nil {
 				log.Printf("error sending status: %v", err)
@@ -235,8 +237,10 @@ eventLoop:
 			if readStatus != status {
 				if status == "on" {
 					conn.PowerOn(0)
+					sleeper.Reset(time.Duration(sleepDuration))
 				} else if status == "standby" {
 					conn.Standby(0)
+					sleeper.Stop()
 				}
 			}
 		case <-interrupt:
